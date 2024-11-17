@@ -121,8 +121,23 @@ public partial class ContainerGenerator : DiagnosticAnalyzer
     {
         foreach (var parameter in parameters)
         {
-            WriteResolutionCall(codeWriter, parameter.Identity, "this");
-            codeWriter.AppendRaw(", ");
+            if (parameter.HasParent)
+            {
+                if (parameter.Identity.IsMainImplementation)
+                {
+                    codeWriter.AppendRaw($"this.GetService<{parameter.Identity.Type}>()");
+                }
+                else
+                {
+                    codeWriter.AppendRaw($"this.GetService<{parameter.Identity.Type}>(\"{parameter.Identity.Name}\")");
+                }
+                codeWriter.AppendRaw(", ");
+            }
+            else
+            {
+                WriteResolutionCall(codeWriter, parameter.Identity, "this");
+                codeWriter.AppendRaw(", ");
+            }
         }
 
         foreach (var pair in optionalParameters)
@@ -222,10 +237,21 @@ public partial class ContainerGenerator : DiagnosticAnalyzer
                             var rootServiceType = rootService.Identity.Type;
                             if (rootService.Identity.IsMainImplementation)
                             {
+                                if (rootService.HasParent)
+                                {
+                                    codeWriter.Append($"{rootServiceType} IServiceProvider<{rootServiceType}>.GetService()");
+                                    codeWriter.Line($" => {rootService.Parent}.GetService<{rootServiceType}>();");
+                                    codeWriter.Line();
+                                    continue;
+                                }
                                 codeWriter.Append($"{rootServiceType} IServiceProvider<{rootServiceType}>.GetService()");
                             }
                             else
                             {
+                                if (rootService.HasParent)
+                                {
+                                    continue;
+                                }
                                 codeWriter.Append($"private {rootServiceType} {GetResolutionServiceName(rootService.Identity)}()");
                             }
 
@@ -305,29 +331,45 @@ public partial class ContainerGenerator : DiagnosticAnalyzer
                             {
                                 var rootServiceType = rootService.Identity.Type;
 
-                                using (rootService.Identity.IsMainImplementation ?
-                                           codeWriter.Scope($"{rootServiceType} IServiceProvider<{rootServiceType}>.GetService()") :
-                                           codeWriter.Scope($"private {rootServiceType} {GetResolutionServiceName(rootService.Identity)}()"))
+                                if (rootService.HasParent)
                                 {
-                                    if (rootService.Lifetime == ServiceLifetime.Singleton)
+                                    if (rootService.Identity.IsMainImplementation)
                                     {
-                                        codeWriter.Append($"return ");
-                                        WriteResolutionCall(codeWriter, rootService.Identity, "_root");
-                                        codeWriter.Line($";");
-                                    }
-                                    else
-                                    {
-                                        GenerateCallSiteWithCache(codeWriter,
-                                            "_root",
-                                            rootService,
-                                            (w, v) => w.Line($"return {v};"));
+                                        using (codeWriter.Scope($"{rootServiceType} IServiceProvider<{rootServiceType}>.GetService()"))
+                                        {
+                                            codeWriter.Append($"return ");
+                                            WriteResolutionCall(codeWriter, rootService.Identity, "_root");
+                                            codeWriter.Line($";");
+                                        }
                                     }
                                 }
+                                else
+                                {
+                                    using (rootService.Identity.IsMainImplementation ?
+                                               codeWriter.Scope($"{rootServiceType} IServiceProvider<{rootServiceType}>.GetService()") :
+                                               codeWriter.Scope($"private {rootServiceType} {GetResolutionServiceName(rootService.Identity)}()"))
+                                    {
+                                        if (rootService.Lifetime == ServiceLifetime.Singleton)
+                                        {
+                                            codeWriter.Append($"return ");
+                                            WriteResolutionCall(codeWriter, rootService.Identity, "_root");
+                                            codeWriter.Line($";");
+                                        }
+                                        else
+                                        {
+                                            GenerateCallSiteWithCache(codeWriter,
+                                                "_root",
+                                                rootService,
+                                                (w, v) => w.Line($"return {v};"));
+                                        }
+                                    }
+                                }
+
                                 codeWriter.Line();
                             }
 
                             WriteServiceProvider(codeWriter, root);
-                            WriteNamedServiceProvider(codeWriter, root);
+                            WriteNamedServiceProvider(codeWriter, root, "_root");
 
                             if (root.KnownTypes.IServiceScopeType != null)
                             {
@@ -364,11 +406,23 @@ public partial class ContainerGenerator : DiagnosticAnalyzer
             .Where(static s => s.Identity.IsMainNamedImplementation)
             .GroupBy<ServiceCallSite, ITypeSymbol>(static s => s.Identity.Type, SymbolEqualityComparer.Default);
     }
-    private void WriteNamedServiceProvider(CodeWriter codeWriter, ServiceProvider root)
+    private void WriteNamedServiceProvider(CodeWriter codeWriter, ServiceProvider root, string? rootName = null)
     {
         foreach (var serviceGroup in GroupNamedServices(root))
         {
             var groupType = serviceGroup.Key;
+            var firstGroup = serviceGroup.First();
+            if (firstGroup.HasParent)
+            {
+                var targetName = rootName ?? firstGroup.Parent;
+                using (codeWriter.Scope($"{groupType} INamedServiceProvider<{groupType}>.GetService(string name)"))
+                {
+                    codeWriter.Line($"return {targetName}.GetService<{groupType}>(name);");
+                }
+                
+                codeWriter.Line();
+                return;
+            }
             using (codeWriter.Scope($"{groupType} INamedServiceProvider<{groupType}>.GetService(string name)"))
             {
                 using (codeWriter.Scope($"switch (name)"))
@@ -486,6 +540,8 @@ public partial class ContainerGenerator : DiagnosticAnalyzer
 
             foreach (var rootService in root.RootCallSites)
             {
+                if (rootService.HasParent)
+                    continue;
                 if (rootService.IsDisposable == false ||
                     (rootService.Lifetime == ServiceLifetime.Singleton && isScoped) ||
                     (rootService.Lifetime == ServiceLifetime.Scoped && !isScoped) ||
@@ -528,6 +584,8 @@ public partial class ContainerGenerator : DiagnosticAnalyzer
 
                 foreach (var rootService in root.RootCallSites)
                 {
+                    if (rootService.HasParent)
+                        continue;
                     if (rootService.IsDisposable == false ||
                         (rootService.Lifetime == ServiceLifetime.Singleton && isScoped) ||
                         (rootService.Lifetime == ServiceLifetime.Scoped && !isScoped) ||
@@ -612,6 +670,8 @@ public partial class ContainerGenerator : DiagnosticAnalyzer
     {
         foreach (var rootService in root.RootCallSites)
         {
+            if (rootService.HasParent)
+                continue;
             if ((rootService.Lifetime == ServiceLifetime.Singleton && isScope) ||
                 (rootService.Lifetime == ServiceLifetime.Scoped && !isScope) ||
                 rootService.Lifetime == ServiceLifetime.Transient) continue;

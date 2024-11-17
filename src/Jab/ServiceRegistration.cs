@@ -8,7 +8,8 @@ internal record ServiceRegistration(
     ISymbol? InstanceMember,
     ISymbol? FactoryMember,
     Location? Location,
-    MemberLocation MemberLocation)
+    MemberLocation MemberLocation,
+    string? Parent = null)
 {
     public INamedTypeSymbol ServiceType { get; } = ServiceType;
     public string? Name { get; } = Name;
@@ -18,6 +19,7 @@ internal record ServiceRegistration(
     public ServiceLifetime Lifetime { get; } = Lifetime;
     public Location? Location { get; } = Location;
     public MemberLocation MemberLocation { get; } = MemberLocation;
+    public string? Parent { get; } = Parent;
 }
 
 internal record RootService(INamedTypeSymbol Service, Location? Location);

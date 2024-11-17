@@ -42,10 +42,20 @@ namespace Jab
     class ImportAttribute: Attribute
     {
         public Type ModuleType { get; }
+        public string Parent { get; }
+        
+        
 
         public ImportAttribute(Type moduleType)
         {
             ModuleType = moduleType;
+            Parent = "";
+        }
+        
+        public ImportAttribute(Type moduleType, string parent)
+        {
+            ModuleType = moduleType;
+            Parent = parent;
         }
     }
 

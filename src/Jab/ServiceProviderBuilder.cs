@@ -119,10 +119,11 @@ internal class ServiceProviderBuilder
                 continue;
             }
 
-            GetCallSite(
+            var callSite = GetCallSite(
                 registration.ServiceType,
                 registration.Name,
                 new ServiceResolutionContext(description, callSites, registration.Location));
+            if (callSite != null) callSite.Parent = registration.Parent;
         }
 
         List<RootService> rootServices = new(description.RootServices);
@@ -826,11 +827,11 @@ internal class ServiceProviderBuilder
                     }
                 }
             }
-            else if (TryGetModuleImport(attributeData, _knownTypes, out var innerModuleType))
+            else if (TryGetModuleImport(attributeData, _knownTypes, out var innerModuleType, out var parent))
             {
-                ProcessModule(serviceProviderType, registrations, innerModuleType, attributeData);
+                ProcessModule(serviceProviderType, registrations, innerModuleType, attributeData, parent);
             }
-            else if (TryCreateRegistration(serviceProviderType, null, attributeData, _knownTypes, out var registration))
+            else if (TryCreateRegistration(serviceProviderType, null, attributeData, _knownTypes, parent, out var registration))
             {
                 registrations.Add(registration);
             }
@@ -857,7 +858,7 @@ internal class ServiceProviderBuilder
     }
 
     private void ProcessModule(ITypeSymbol serviceProviderType, List<ServiceRegistration> registrations,
-        INamedTypeSymbol moduleType, AttributeData importAttributeData)
+        INamedTypeSymbol moduleType, AttributeData importAttributeData, string? parent = null)
     {
         // TODO: idempotency
         bool isModule = false;
@@ -875,9 +876,9 @@ internal class ServiceProviderBuilder
             }
             else if (TryGetModuleImport(attributeData, knownTypes, out var innerModuleType))
             {
-                ProcessModule(serviceProviderType, registrations, innerModuleType, importAttributeData);
+                ProcessModule(serviceProviderType, registrations, innerModuleType, importAttributeData, parent);
             }
-            else if (TryCreateRegistration(serviceProviderType, moduleType, attributeData, knownTypes, out var registration))
+            else if (TryCreateRegistration(serviceProviderType, moduleType, attributeData, knownTypes, parent, out var registration))
             {
                 registrations.Add(registration);
             }
@@ -916,11 +917,42 @@ internal class ServiceProviderBuilder
         moduleType = null;
         return false;
     }
+    
+    private bool TryGetModuleImport(AttributeData attributeData, KnownTypes knownTypes,
+        [NotNullWhen(true)] out INamedTypeSymbol? moduleType, [NotNullWhen(true)] out string? parent)
+    {
+        if (SymbolEqualityComparer.Default.Equals(attributeData.AttributeClass, knownTypes.ImportAttribute) ||
+            SymbolEqualityComparer.Default.Equals(attributeData.AttributeClass?.ConstructedFrom,
+                knownTypes.GenericImportAttribute))
+        {
+            parent = string.Empty;
+            if (attributeData.AttributeClass is { IsGenericType: true })
+            {
+                moduleType = (INamedTypeSymbol)attributeData.AttributeClass.TypeArguments[0];
+            }
+            else
+            {
+                moduleType = ExtractType(attributeData.ConstructorArguments[0]);
+                if (attributeData.ConstructorArguments.Length > 1)
+                {
+                    var argument = attributeData.ConstructorArguments[1];
+                    parent = argument.Value!.ToString();
+                }
+            }
+
+            return true;
+        }
+
+        parent = null;
+        moduleType = null;
+        return false;
+    }
+
 
     private bool TryCreateRegistration(ITypeSymbol serviceProviderType,
         ITypeSymbol? moduleType,
         AttributeData attributeData,
-        KnownTypes knownTypes, [NotNullWhen(true)] out ServiceRegistration? registration)
+        KnownTypes knownTypes, string? parent, [NotNullWhen(true)] out ServiceRegistration? registration)
     {
         registration = null;
 
@@ -934,7 +966,7 @@ internal class ServiceProviderBuilder
                  knownTypes.GenericTransientAttributeType) ||
              SymbolEqualityComparer.Default.Equals(attributeData.AttributeClass.ConstructedFrom,
                  knownTypes.Generic2TransientAttributeType)) &&
-            TryCreateRegistration(serviceProviderType, moduleType, attributeData, ServiceLifetime.Transient, out registration))
+            TryCreateRegistration(serviceProviderType, moduleType, attributeData, ServiceLifetime.Transient, parent, out registration))
         {
             return true;
         }
@@ -944,7 +976,7 @@ internal class ServiceProviderBuilder
                  knownTypes.GenericSingletonAttribute) ||
              SymbolEqualityComparer.Default.Equals(attributeData.AttributeClass.ConstructedFrom,
                  knownTypes.Generic2SingletonAttribute)) &&
-            TryCreateRegistration(serviceProviderType, moduleType, attributeData, ServiceLifetime.Singleton, out registration))
+            TryCreateRegistration(serviceProviderType, moduleType, attributeData, ServiceLifetime.Singleton, parent, out registration))
         {
             return true;
         }
@@ -954,7 +986,7 @@ internal class ServiceProviderBuilder
                  knownTypes.GenericScopedAttribute) ||
              SymbolEqualityComparer.Default.Equals(attributeData.AttributeClass.ConstructedFrom,
                  knownTypes.Generic2ScopedAttribute)) &&
-            TryCreateRegistration(serviceProviderType, moduleType, attributeData, ServiceLifetime.Scoped, out registration))
+            TryCreateRegistration(serviceProviderType, moduleType, attributeData, ServiceLifetime.Scoped, parent, out registration))
         {
             return true;
         }
@@ -967,6 +999,7 @@ internal class ServiceProviderBuilder
         ITypeSymbol? moduleType,
         AttributeData attributeData,
         ServiceLifetime serviceLifetime,
+        string? parent,
         [NotNullWhen(true)] out ServiceRegistration? registration)
     {
         registration = null;
@@ -1055,7 +1088,8 @@ internal class ServiceProviderBuilder
             instanceMember,
             factoryMember,
             attributeData.ApplicationSyntaxReference?.GetSyntax().GetLocation(),
-            memberLocation);
+            memberLocation,
+            parent);
 
         return true;
     }
